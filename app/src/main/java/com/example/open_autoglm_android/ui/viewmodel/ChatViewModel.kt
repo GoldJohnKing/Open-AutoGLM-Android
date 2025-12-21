@@ -10,6 +10,7 @@ import com.example.open_autoglm_android.data.SavedChatMessage
 import com.example.open_autoglm_android.data.Conversation
 import com.example.open_autoglm_android.domain.ActionExecutor
 import com.example.open_autoglm_android.domain.AppRegistry
+import com.example.open_autoglm_android.domain.ExecuteResult
 import com.example.open_autoglm_android.network.ModelClient
 import com.example.open_autoglm_android.network.dto.ChatMessage as NetworkChatMessage
 import com.example.open_autoglm_android.service.AutoGLMAccessibilityService
@@ -319,12 +320,32 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             Log.d("ChatViewModel", "执行步骤 $stepCount")
             
             // 更新悬浮窗状态
-            FloatingWindowService.getInstance()?.updateStatus("执行中", stepCount, "正在截图...")
+            FloatingWindowService.getInstance()?.updateStatus("执行中", stepCount, "正在检测当前状态...")
+
+            // 使用 safeCurrentApp 获取当前应用 (包含 rootInActiveWindow 兜底)
+            val currentApp = accessibilityService.safeCurrentApp
+            Log.d("ChatViewModel", "当前应用: $currentApp")
+
+            val myPackageName = getApplication<Application>().packageName
+            val isAutoGLMForeground = currentApp == myPackageName
+
+            // 如果已经在任务中（非第一步）且回到了主应用前台，通常建议等待用户切换回目标应用，避免模型在主应用内乱操作
+            if (isAutoGLMForeground && stepCount > 0) {
+                Log.d("ChatViewModel", "任务执行中检测到回到本应用，等待用户切换...")
+                FloatingWindowService.getInstance()?.updateStatus("执行中", stepCount, "等待切回目标应用...")
+                delay(2000)
+                continue
+            }
             
-            // 截图
-            val screenshot = accessibilityService.takeScreenshotSuspend()
+            // 截图：如果当前在本应用前台，跳过截图发送以保护隐私
+            val screenshot = if (isAutoGLMForeground) {
+                Log.d("ChatViewModel", "当前在本应用前台，跳过截图以保护隐私")
+                null
+            } else {
+                accessibilityService.takeScreenshotSuspend()
+            }
             
-            if (screenshot == null) {
+            if (screenshot == null && !isAutoGLMForeground) {
                 val androidVersion = android.os.Build.VERSION.SDK_INT
                 val errorMessage = if (androidVersion < android.os.Build.VERSION_CODES.R) {
                     "无法获取屏幕截图：需要 Android 11 (API 30) 及以上版本，当前版本: Android ${android.os.Build.VERSION.RELEASE} (API $androidVersion)"
@@ -339,25 +360,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
             
             // 检查截图是否全黑（在模拟器上可能无法正常截图，所以跳过检测）
-            val isEmulator = DeviceUtils.isEmulator()
-            if (BitmapUtils.isBitmapBlack(screenshot)) {
-                if (isEmulator) {
-                    // 在模拟器上，截图可能无法正常工作，但仍然尝试继续
-                    Log.w("ChatViewModel", "检测到模拟器环境，截图是全黑的，但继续执行（模拟器限制）")
-                    // 不返回，继续执行
-                } else {
-                    // 在真机上，如果截图是全黑的，给出错误提示
-                    _uiState.value = _uiState.value.copy(
-                        isLoading = false,
-                        error = "截图是全黑的，可能是应用设置了 FLAG_SECURE 防止截图，或者是应用正在启动中。请稍后再试。\n\n提示：如果在模拟器上运行，截图功能可能无法正常工作，建议在真机上测试。"
-                    )
-                    return
+            if (screenshot != null) {
+                val isEmulator = DeviceUtils.isEmulator()
+                if (BitmapUtils.isBitmapBlack(screenshot)) {
+                    if (isEmulator) {
+                        // 在模拟器上，截图可能无法正常工作，但仍然尝试继续
+                        Log.w("ChatViewModel", "检测到模拟器环境，截图是全黑的，但继续执行（模拟器限制）")
+                        // 不返回，继续执行
+                    } else {
+                        // 在真机上，如果截图是全黑的，给出错误提示
+                        _uiState.value = _uiState.value.copy(
+                            isLoading = false,
+                            error = "截图是全黑的，可能是应用设置了 FLAG_SECURE 防止截图，或者是应用正在启动中。请稍后再试。\n\n提示：如果在模拟器上运行，截图功能可能无法正常工作，建议在真机上测试。"
+                        )
+                        return
+                    }
                 }
             }
-            
-            // 使用 safeCurrentApp 获取当前应用 (包含 rootInActiveWindow 兜底)
-            val currentApp = accessibilityService.safeCurrentApp
-            Log.d("ChatViewModel", "当前应用: $currentApp")
             
             // 构建消息上下文
             if (stepCount == 0) {
@@ -423,11 +442,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             FloatingWindowService.getInstance()?.updateStatus("执行中", stepCount, "执行动作...")
             
             // 解析并执行动作
-            val result = executor.execute(
+            val displayMetrics = getApplication<Application>().resources.displayMetrics
+            val result = actionExecutor?.execute(
                 response.action,
-                screenshot.width,
-                screenshot.height
-            )
+                screenshot?.width ?: displayMetrics.widthPixels,
+                screenshot?.height ?: displayMetrics.heightPixels
+            ) ?: ExecuteResult(false, "ActionExecutor is null")
             Log.d("ChatViewModel", "动作执行结果: success=${result.success}, message=${result.message}")
             
             if (isFinishAction) {

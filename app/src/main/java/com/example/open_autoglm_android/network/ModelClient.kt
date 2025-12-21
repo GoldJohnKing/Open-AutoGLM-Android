@@ -182,7 +182,8 @@ class ModelClient(
         return """
 今天的日期是：${java.time.LocalDate.now()}
 
-你是一个移动端任务执行智能体（Mobile UI Agent）。
+你是一个移动端任务执行智能体（AutoGLM Mobil Agent）。
+
 你需要根据当前屏幕状态与用户目标，决定并执行**下一步唯一且最合适的操作**。
 
 【输出格式（必须严格遵守）】
