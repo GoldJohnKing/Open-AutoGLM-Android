@@ -1,6 +1,7 @@
 package com.example.open_autoglm_android.ui.viewmodel
 
 import android.app.Application
+import android.graphics.Bitmap
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -33,6 +34,7 @@ data class ChatMessage(
     val content: String,
     val thinking: String? = null,
     val action: String? = null,
+    val imagePath: String? = null,
     val timestamp: Long = System.currentTimeMillis()
 )
 
@@ -52,6 +54,14 @@ data class ChatUiState(
     val isDrawerOpen: Boolean = false
 )
 
+data class StepTiming(
+    val step: Int,
+    val screenshotMs: Long = 0,
+    val networkMs: Long = 0,
+    val executionMs: Long = 0,
+    val totalMs: Long = 0
+)
+
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
     
     private val preferencesRepository = PreferencesRepository(application)
@@ -66,6 +76,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     
     // 维护对话上下文（消息历史，仅在运行时有效，包含图片等大数据）
     private val messageContext = mutableListOf<NetworkChatMessage>()
+    // 维护每一步的耗时信息
+    private val stepTimings = mutableListOf<StepTiming>()
     
     init {
         setupFloatingWindowListeners()
@@ -134,6 +146,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     content = saved.content,
                     thinking = saved.thinking,
                     action = saved.action,
+                    imagePath = saved.imagePath,
                     timestamp = saved.timestamp
                 )
             }
@@ -150,6 +163,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 content = msg.content,
                 thinking = msg.thinking,
                 action = msg.action,
+                imagePath = msg.imagePath,
                 timestamp = msg.timestamp
             )
         }
@@ -163,6 +177,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             conversationRepository.createConversation()
             messageContext.clear()
+            stepTimings.clear()
         }
     }
     
@@ -172,6 +187,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun switchConversation(conversationId: String) {
         conversationRepository.switchConversation(conversationId)
         messageContext.clear()
+        stepTimings.clear()
         _uiState.value = _uiState.value.copy(isDrawerOpen = false)
     }
     
@@ -182,6 +198,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             conversationRepository.deleteConversation(conversationId)
             messageContext.clear()
+            stepTimings.clear()
         }
     }
     
@@ -251,6 +268,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 
                 // 清空消息上下文，开始新的任务
                 messageContext.clear()
+                stepTimings.clear()
                 
                 // 保存用户消息
                 saveCurrentMessages()
@@ -311,6 +329,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val compressionLevel = if (compressionEnabled) preferencesRepository.getImageCompressionLevelSync() else 80
         
         while (stepCount < maxSteps) {
+            val stepStartTime = System.currentTimeMillis()
+            
             // 检查暂停状态
             while (_uiState.value.isPaused) {
                 delay(500)
@@ -338,12 +358,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
             
             // 截图：如果当前在本应用前台，跳过截图发送以保护隐私
+            val screenshotStartTime = System.currentTimeMillis()
             val screenshot = if (isAutoGLMForeground) {
                 Log.d("ChatViewModel", "当前在本应用前台，跳过截图以保护隐私")
                 null
             } else {
                 accessibilityService.takeScreenshotSuspend()
             }
+            val screenshotDuration = System.currentTimeMillis() - screenshotStartTime
             
             if (screenshot == null && !isAutoGLMForeground) {
                 val androidVersion = android.os.Build.VERSION.SDK_INT
@@ -394,11 +416,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             FloatingWindowService.getInstance()?.updateStatus("执行中", stepCount, "调用模型...")
             
             // 调用模型（使用消息上下文）
+            val networkStartTime = System.currentTimeMillis()
             val messagesList: List<NetworkChatMessage> = messageContext.toList()
             val response = client.request(
                 messages = messagesList,
                 modelName = modelName
             )
+            val networkDuration = System.currentTimeMillis() - networkStartTime
             Log.d("ChatViewModel", "模型响应: thinking=${response.thinking.take(100)}, action=${response.action.take(100)}")
             
             // 添加助手消息到上下文
@@ -416,22 +440,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             
-            // 添加助手消息到UI
-            val assistantMessage = ChatMessage(
-                id = "${System.currentTimeMillis()}_$stepCount",
-                role = MessageRole.ASSISTANT,
-                content = response.action,
-                thinking = response.thinking,
-                action = response.action
-            )
-            
-            _uiState.value = _uiState.value.copy(
-                messages = _uiState.value.messages + assistantMessage
-            )
-            
-            // 保存消息
-            saveCurrentMessages()
-            
             // 如果模型返回的是 finish，则直接结束，不再执行动作
             val isFinishAction = response.action.contains("\"_metadata\":\"finish\"") ||
                 response.action.contains("\"_metadata\": \"finish\"") ||
@@ -441,14 +449,73 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             FloatingWindowService.getInstance()?.updateStatus("执行中", stepCount, "执行动作...")
             
             // 解析并执行动作
+            val executionStartTime = System.currentTimeMillis()
             val displayMetrics = getApplication<Application>().resources.displayMetrics
             val result = actionExecutor?.execute(
                 response.action,
                 screenshot?.width ?: displayMetrics.widthPixels,
                 screenshot?.height ?: displayMetrics.heightPixels
             ) ?: ExecuteResult(false, "ActionExecutor is null")
+            val executionDuration = System.currentTimeMillis() - executionStartTime
             Log.d("ChatViewModel", "动作执行结果: success=${result.success}, message=${result.message}")
             
+            // 记录耗时
+            val stepTotalDuration = System.currentTimeMillis() - stepStartTime
+            stepTimings.add(
+                StepTiming(
+                    step = stepCount,
+                    screenshotMs = screenshotDuration,
+                    networkMs = networkDuration,
+                    executionMs = executionDuration,
+                    totalMs = stepTotalDuration
+                )
+            )
+            
+            // 如果执行成功且有截图，生成标记过的截图
+            var savedImagePath: String? = null
+            if (result.success && screenshot != null && result.actionDetail != null) {
+                val detail = result.actionDetail
+                var markedBitmap: Bitmap? = null
+                
+                when (detail.type) {
+                    "tap", "longpress", "doubletap", "type" -> {
+                        if (detail.x1 != null && detail.y1 != null) {
+                            markedBitmap = BitmapUtils.drawTapMarker(screenshot, detail.x1, detail.y1)
+                        }
+                    }
+                    "swipe" -> {
+                        if (detail.x1 != null && detail.y1 != null && detail.x2 != null && detail.y2 != null) {
+                            markedBitmap = BitmapUtils.drawSwipeMarker(screenshot, detail.x1, detail.y1, detail.x2, detail.y2)
+                        }
+                    }
+                }
+                
+                if (markedBitmap != null) {
+                    savedImagePath = BitmapUtils.saveBitmap(getApplication(), markedBitmap)
+                    markedBitmap.recycle()
+                } else {
+                    // 如果没有特定标记，也保存原始截图以便回看
+                    savedImagePath = BitmapUtils.saveBitmap(getApplication(), screenshot)
+                }
+            }
+
+            // 添加助手消息到UI
+            val assistantMessage = ChatMessage(
+                id = "${System.currentTimeMillis()}_$stepCount",
+                role = MessageRole.ASSISTANT,
+                content = response.action,
+                thinking = response.thinking,
+                action = response.action,
+                imagePath = savedImagePath
+            )
+            
+            _uiState.value = _uiState.value.copy(
+                messages = _uiState.value.messages + assistantMessage
+            )
+            
+            // 保存消息
+            saveCurrentMessages()
+
             if (isFinishAction) {
                 val completionMessage = extractFinishMessage(response.action) ?: result.message ?: resultMessageFallback(response.action)
                 FloatingWindowService.getInstance()?.updateStatus("已完成", stepCount, completionMessage)
@@ -572,14 +639,37 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun formatMessageContext(context: List<NetworkChatMessage>): String {
-        return context.joinToString("\n\n" + "-".repeat(20) + "\n\n") { msg ->
+        val result = StringBuilder()
+        var assistantCount = 0
+        
+        context.forEachIndexed { index, msg ->
             val role = msg.role.uppercase()
             val content = msg.content.joinToString("\n") { item ->
                 if (item.type == "text") item.text ?: ""
                 else "[IMAGE CONTENT]"
             }
-            "[$role]:\n$content"
+            
+            result.append("[$role]:\n$content")
+            
+            // 如果是助手消息，尝试关联耗时信息
+            if (role == "ASSISTANT") {
+                if (assistantCount < stepTimings.size) {
+                    val timing = stepTimings[assistantCount]
+                    result.append("\n\n[TIMING INFO - Step ${timing.step}]:")
+                    result.append("\n- Screenshot: ${timing.screenshotMs}ms")
+                    result.append("\n- Network (LLM): ${timing.networkMs}ms")
+                    result.append("\n- Action Execution: ${timing.executionMs}ms")
+                    result.append("\n- Step Total: ${timing.totalMs}ms")
+                }
+                assistantCount++
+            }
+            
+            if (index < context.size - 1) {
+                result.append("\n\n" + "-".repeat(20) + "\n\n")
+            }
         }
+        
+        return result.toString()
     }
     
     /**
@@ -625,6 +715,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             )
             // 清空消息上下文
             messageContext.clear()
+            stepTimings.clear()
             // 保存空消息
             saveCurrentMessages()
             Log.d("ChatViewModel", "已清理对话历史，开始新会话")
