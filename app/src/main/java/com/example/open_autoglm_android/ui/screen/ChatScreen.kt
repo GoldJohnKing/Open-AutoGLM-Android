@@ -77,7 +77,9 @@ fun ChatScreen(
         }
     }
 
-    Column(modifier = modifier.fillMaxSize().imePadding()) {
+    Column(modifier = modifier
+        .fillMaxSize()
+        .imePadding()) {
 
         // 错误提示
         uiState.error?.let { error ->
@@ -189,7 +191,9 @@ fun ChatScreen(
                 OutlinedTextField(
                     value = userInput,
                     onValueChange = { userInput = it },
-                    modifier = Modifier.weight(1f).imeNestedScroll() ,
+                    modifier = Modifier
+                        .weight(1f)
+                        .imeNestedScroll(),
                     placeholder = { Text("输入任务描述...") },
                     enabled = !uiState.isLoading,
                     maxLines = 3
@@ -241,8 +245,7 @@ fun ChatScreen(
     }
 
     // 全屏图片预览
-    previewImageIndex?.let {
-            initialIndex ->
+    previewImageIndex?.let { initialIndex ->
         ImagePreviewDialog(
             imageMessages = allImageMessages,
             initialIndex = initialIndex,
@@ -372,7 +375,7 @@ fun ImagePreviewDialog(
 fun ConversationDrawer(
     conversations: List<Conversation>,
     currentConversationId: String?,
-    onConversationClick: (String) -> Unit,
+    onConversationClick: (String, String) -> Unit,
     onNewConversation: () -> Unit,
     onDeleteConversation: (String) -> Unit
 ) {
@@ -415,7 +418,7 @@ fun ConversationDrawer(
                     ConversationItem(
                         conversation = conversation,
                         isSelected = conversation.id == currentConversationId,
-                        onClick = { onConversationClick(conversation.id) },
+                        onClick = { onConversationClick(conversation.id, conversation.title) },
                         onDelete = { onDeleteConversation(conversation.id) }
                     )
                 }

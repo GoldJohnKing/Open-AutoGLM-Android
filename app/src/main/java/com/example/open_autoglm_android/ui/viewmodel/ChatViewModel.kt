@@ -51,6 +51,7 @@ data class ChatUiState(
     val taskCompletedMessage: String? = null,
     val conversations: List<Conversation> = emptyList(),
     val currentConversationId: String? = null,
+    val currentConversationTitle: String? = null,
     val isDrawerOpen: Boolean = false
 )
 
@@ -105,6 +106,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     _uiState.value = _uiState.value.copy(currentConversationId = conversationId)
                     // 加载对话历史
                     loadConversationMessages(conversationId)
+                }
+            }
+
+            launch {
+                conversationRepository.currentConversationTitle.collect { conversationTitle ->
+                    _uiState.value = _uiState.value.copy(currentConversationTitle = conversationTitle)
                 }
             }
             
@@ -188,11 +195,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * 切换对话
      */
-    fun switchConversation(conversationId: String) {
+    fun switchConversation(conversationId: String,conversationTitle:String) {
         conversationRepository.switchConversation(conversationId)
         messageContext.clear()
         stepTimings.clear()
-        _uiState.value = _uiState.value.copy(isDrawerOpen = false)
+        _uiState.value = _uiState.value.copy(isDrawerOpen = false, currentConversationTitle = conversationTitle)
     }
     
     /**

@@ -32,13 +32,18 @@ class ConversationRepository(context: Context) {
     
     private val _currentConversationId = MutableStateFlow<String?>(null)
     val currentConversationId: Flow<String?> = _currentConversationId.asStateFlow()
+
+    private val _currentConversationTitle = MutableStateFlow<String?>(null)
+    val currentConversationTitle: Flow<String?> = _currentConversationTitle.asStateFlow()
     
     init {
         // 初始化时加载对话列表并设置默认选中的对话
         coroutineScope.launch {
             val allConversations = conversationDao.getAllConversations().first()
             if (allConversations.isNotEmpty()) {
-                _currentConversationId.value = allConversations.first().id
+                val conversation = allConversations.first()
+                _currentConversationId.value = conversation.id
+                _currentConversationTitle.value = conversation.title
             }
         }
     }
@@ -57,6 +62,7 @@ class ConversationRepository(context: Context) {
         val conversation = Conversation(title = title)
         conversationDao.insertConversation(conversation)
         _currentConversationId.value = conversation.id
+        _currentConversationTitle.value = title
         return conversation
     }
     
@@ -130,6 +136,7 @@ class ConversationRepository(context: Context) {
         if (_currentConversationId.value == conversationId) {
             val remainingConversations = conversationDao.getAllConversations().first()
             _currentConversationId.value = remainingConversations.firstOrNull()?.id
+            _currentConversationTitle.value = remainingConversations.firstOrNull()?.title
         }
     }
     
@@ -139,6 +146,7 @@ class ConversationRepository(context: Context) {
     suspend fun renameConversation(conversationId: String, newTitle: String) {
         val conversation = conversationDao.getConversationById(conversationId) ?: return
         val updatedConversation = conversation.copy(title = newTitle)
+        _currentConversationTitle.value = newTitle
         conversationDao.updateConversation(updatedConversation)
     }
 }
