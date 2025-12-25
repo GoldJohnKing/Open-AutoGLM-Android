@@ -562,6 +562,34 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
             
             if (!result.success) {
+                val isNonRetryableError = result.message?.contains("未启用") == true ||
+                                         result.message?.contains("不在白名单") == true ||
+                                         result.message?.contains("应用管理页面") == true
+                
+                if (isNonRetryableError) {
+                    val errorMessage = result.message ?: "操作被阻止"
+                    Log.e("ChatViewModel", "遇到不可重试的错误，终止任务: $errorMessage")
+                    FloatingWindowService.getInstance()?.updateStatus("已停止", stepCount, errorMessage)
+                    _uiState.value = _uiState.value.copy(
+                        isLoading = false,
+                        error = errorMessage
+                    )
+                    
+                    val errorTimestamp = System.currentTimeMillis()
+                    val errorMsg = ChatMessage(
+                        id = "error_${errorTimestamp}",
+                        role = MessageRole.ASSISTANT,
+                        content = errorMessage,
+                        timestamp = errorTimestamp
+                    )
+                    _uiState.value = _uiState.value.copy(
+                        messages = _uiState.value.messages + errorMsg
+                    )
+                    
+                    executor.bringAppToForeground()
+                    return
+                }
+                
                 retryCount++
                 Log.w("ChatViewModel", "动作执行失败，准备重试 ($retryCount/3): ${result.message}")
 
